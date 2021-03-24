@@ -1,3 +1,4 @@
+#include <filesystem>
 #include <string>
 
 #include "CLI/App.hpp"
@@ -5,10 +6,22 @@
 #include "CLI/Formatter.hpp"
 #include "fmt/core.h"
 
+#include "processor.h"
+
+void process_file(char *filename);
+
 int main(int argc, char **argv) {
   // --------------- vars -----------------------------
-  std::string filename = "default";
+  std::string filename;
   std::string outputfile;
+
+  // -------------- operations -----------------------
+  bool correct_bad_pixels = false;
+
+  bool correct_black_level = false;
+  // arbitary values b g g r, g b r g, etc.
+  int black_level[4] = {300, 300, 300, 300};
+  int white_level[4] = {15520, 15520, 15520, 15520};
 
   // ---------------- CLI parsing ---------------------
   CLI::App app{"An app to apply image signal processing algorithm on \
@@ -17,11 +30,27 @@ int main(int argc, char **argv) {
   app.add_option("-f,--file", filename, "raw image file to work on")
       ->required();
   app.add_option("-o,--output", outputfile, "output file name/uri");
+  app.add_flag("--bad-pixel", correct_bad_pixels, "Correct bad pixels");
 
   CLI11_PARSE(app, argc, argv);
+
+  // --------------- processing/interpolation of cli --------------------
+  if (outputfile.empty()) {
+    outputfile = fmt::format("{}.out.raw", filename);
+  }
   // ---------------- CLI parsing done ---------------------
 
-  // ---------------- Functinal code -----------------------
   fmt::print("Selected file is: '{}'\n", filename);
+  if (std::filesystem::exists(filename)) {
+    ISPP::Processor processor(filename.c_str());
+
+    if (correct_bad_pixels) {
+      processor.correct_bad_pixels();
+    }
+
+  } else {
+    fmt::print(stderr, "Selected file doesn't exists, exiting...\n");
+  }
+
   return 0;
 }
