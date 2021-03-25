@@ -20,8 +20,8 @@ int main(int argc, char **argv) {
 
   bool correct_black_level = false;
   // arbitary values b g g r, g b r g, etc.
-  int black_level[4] = {300, 300, 300, 300};
-  int white_level[4] = {15520, 15520, 15520, 15520};
+  constexpr const int BLACK_LEVEL[4] = {300, 300, 300, 300};
+  constexpr const int WHITE_LEVEL[4] = {15520, 15520, 15520, 15520};
 
   // ---------------- CLI parsing ---------------------
   CLI::App app{"An app to apply image signal processing algorithm on \

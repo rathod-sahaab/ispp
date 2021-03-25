@@ -1,9 +1,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <execution>
 #include <filesystem>
 
 #include <fmt/core.h>
+#include <numeric>
 
 #include "processor.h"
 
@@ -36,12 +38,14 @@ namespace {
  *
  * The neighbors will be in linear system as that is required
  */
-std::array<int, 8> get_reflect_neighbours(const int index, const int width,
-                                          const int height) {
+std::array<ushort *, 8> get_reflect_neighbors(const int index, const int width,
+                                              const int height,
+                                              ushort image[][4]) {
+  // arrays can be replaced with vector for variable kernel size
   const int x = index / width;
   const int y = index % width;
   // TODO: Make it work for multiple kernel sizes
-  std::array<std::pair<int, int>, 8> neighbors{{
+  std::array<std::pair<int, int>, 8> neighbor_indices{{
       // clang-format off
       {x - 1, y - 1}, {x, y - 1}, {x + 1, y - 1},
       { x - 1, y},		      {x + 1, y},
@@ -55,7 +59,7 @@ std::array<int, 8> get_reflect_neighbours(const int index, const int width,
        */
   }};
 
-  for (auto &neighbor : neighbors) {
+  for (auto &neighbor : neighbor_indices) {
     if (neighbor.first < 0) {
       neighbor.first = abs(neighbor.first);
     } else if (neighbor.first >= width) {
@@ -69,16 +73,16 @@ std::array<int, 8> get_reflect_neighbours(const int index, const int width,
     }
   }
 
-  std::array<int, 8> result;
+  std::array<ushort *, 8> neighbor_pixels;
+  // stores value of neighbor pointer to array
 
-  // transform from 2D to 1D
-  std::transform(neighbors.begin(), neighbors.end(), result.begin(),
-                 [width, height](std::pair<int, int> neighbor) -> int {
-                   return neighbor.first * width + neighbor.second;
-                 });
+  std::transform(neighbor_indices.begin(), neighbor_indices.end(),
+                 neighbor_pixels.begin(),
+                 [image](int index) -> ushort * { return image[index]; });
 
-  return result;
+  return neighbor_pixels;
 }
+
 } // namespace
 
 namespace ISPP {
@@ -104,28 +108,36 @@ void Processor::correct_bad_pixels(const int threshold,
   auto &image =
       _imageProcessor.imgdata.image; // ushort *[4] or [][4] : 4 channels
   // TODO: confirm if width may change
-  auto &width = _imageProcessor.imgdata.sizes.width;
-  auto &height = _imageProcessor.imgdata.sizes.height;
-
-  const auto total_pixels = width * height;
+  const auto [width, height, total_pixels] = image_dimensions();
 
   for (int i = 0; i < total_pixels; ++i) {
-    const auto neighbors = get_reflect_neighbours(i, width, height);
+    const auto neighbor_pixels = get_reflect_neighbors(i, width, height, image);
     for (int j = 0; j < 4; ++j) {
+      const auto curr_value = image[i][j];
 
-      // check if all pixel are above threshold
+      // check if all pixels are above threshold w.r.t neighbors
+      // TODO: Use better bad pixel detection mechanism
       bool is_bad_pixel = std::all_of(
-          neighbors.begin(), neighbors.end(),
-          [&image, j, threshold, i](int neighbor) -> bool {
-            return abs(image[neighbor][j] - image[i][j]) > threshold;
+          neighbor_pixels.begin(), neighbor_pixels.end(),
+          [curr_value, threshold, j](ushort neighbor_pixel[4]) -> bool {
+            return abs(neighbor_pixel[j] - curr_value) > threshold;
           });
 
       if (is_bad_pixel) {
-        auto curr_value = image[i][j];
         auto new_value = curr_value;
+
+        // transform neighbors to take values of pixel at indices they contain
+        // of image they point to
 
         switch (filter) {
         case BadPixelFilter::MEAN:
+          // average of all neighboring pixels
+          new_value = std::accumulate(
+              neighbor_pixels.begin(), neighbor_pixels.end(), 0,
+              [j](const auto a, const auto b) { return a[j] + b[j]; });
+          new_value /= neighbor_pixels.size();
+          break;
+        case BadPixelFilter::HALF_MEAN:
           // TODO: [KERNEL] depends on kernel size
           /*
            * Index map [multiple instances search by tag INDEX_MAP]
@@ -133,7 +145,8 @@ void Processor::correct_bad_pixels(const int threshold,
            *  3   4
            *  5 6 7
            */
-          new_value = neighbors[1] + neighbors[3] + neighbors[4] + neighbors[6];
+          new_value = neighbor_pixels[1][j] + neighbor_pixels[3][j] +
+                      neighbor_pixels[4][j] + neighbor_pixels[6][j];
           new_value /= 4;
           break;
         case BadPixelFilter::GRADIENT: {
@@ -141,25 +154,25 @@ void Processor::correct_bad_pixels(const int threshold,
           int twice_curr = 2 * curr_value;
 
           // d vertical, d horizontal, d digonal right, d digonal left
-          int dv = twice_curr - neighbors[1] - neighbors[6];
-          int dh = twice_curr - neighbors[3] - neighbors[4];
-          int ddr = twice_curr - neighbors[0] - neighbors[7];
-          int ddl = twice_curr - neighbors[2] - neighbors[5];
+          int dv = twice_curr - neighbor_pixels[1][j] - neighbor_pixels[6][j];
+          int dh = twice_curr - neighbor_pixels[3][j] - neighbor_pixels[4][j];
+          int ddr = twice_curr - neighbor_pixels[0][j] - neighbor_pixels[7][j];
+          int ddl = twice_curr - neighbor_pixels[2][j] - neighbor_pixels[5][j];
 
           int min_gradient = std::min({dv, dh, ddr, ddl});
 
           if (min_gradient == dv) {
             // mean along vertical gradient
-            new_value = (neighbors[1] + neighbors[6] + 1) / 2;
+            new_value = (neighbor_pixels[1][j] + neighbor_pixels[6][j] + 1) / 2;
           } else if (min_gradient == dh) {
             // horizontal
-            new_value = (neighbors[3] + neighbors[4] + 1) / 2;
+            new_value = (neighbor_pixels[3][j] + neighbor_pixels[4][j] + 1) / 2;
           } else if (min_gradient == dh) {
             // digonal right
-            new_value = (neighbors[0] + neighbors[7] + 1) / 2;
+            new_value = (neighbor_pixels[0][j] + neighbor_pixels[7][j] + 1) / 2;
           } else {
             // digonal left
-            new_value = (neighbors[2] + neighbors[5] + 1) / 2;
+            new_value = (neighbor_pixels[2][j] + neighbor_pixels[5][j] + 1) / 2;
           }
 
         } break;
@@ -177,16 +190,21 @@ void Processor::correct_black_level(
   auto &image =
       _imageProcessor.imgdata.image; // ushort *[4] or [][4] : 4 channels
   // TODO: confirm if width/height may change
-  auto &width = _imageProcessor.imgdata.sizes.width;
-  auto &height = _imageProcessor.imgdata.sizes.height;
-
-  const auto total_pixels = width * height;
+  const auto [width, height, total_pixels] = image_dimensions();
 
   for (int i = 0; i < total_pixels; ++i) {
     for (int j = 0; j < 4; ++j) {
       // TODO: add logic here
     }
   }
+}
+std::tuple<ushort, ushort, int> Processor::image_dimensions() {
+
+  const auto width = _imageProcessor.imgdata.sizes.width;
+  const auto height = _imageProcessor.imgdata.sizes.height;
+  const auto total_pixels = width * height;
+
+  return {width, height, total_pixels};
 }
 
 void Processor::export_image(const char *filename) {}
