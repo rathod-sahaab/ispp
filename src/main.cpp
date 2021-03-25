@@ -45,7 +45,8 @@ int main(int argc, char **argv) {
     ISPP::Processor processor(filename.c_str());
 
     if (correct_bad_pixels) {
-      processor.correct_bad_pixels();
+      // arbitary value 10000
+      processor.correct_bad_pixels(10'000, ISPP::BadPixelFilter::GRADIENT);
     }
 
   } else {
